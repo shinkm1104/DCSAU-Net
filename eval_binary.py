@@ -2,10 +2,13 @@ import numpy as np
 import torch
 from torch.autograd import Variable
 import torch.nn as nn
-from data_loading import binary_class
+from data_loading import binary_class, multi_classes
 import albumentations as A
 from albumentations.pytorch import ToTensor
 from pytorch_lightning.metrics import Accuracy, Precision, Recall, F1
+from loss import IoU_multiple, DiceLoss_multiple
+# from torchmetrics.functional import accuracy, precision, recall, f1_score
+
 import argparse
 import time
 import pandas as pd
@@ -43,13 +46,23 @@ class Dice(nn.Module):
         
         return dice
 
+# def get_transform():
+#    return A.Compose(
+#        [
+#         A.Resize(256, 256),
+#         A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+#         ToTensor()
+#         ])
+
 def get_transform():
-   return A.Compose(
-       [
-        A.Resize(256, 256),
-        A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-        ToTensor()
-        ])
+    return A.Compose(
+        [
+            A.Resize(256, 256),
+            A.Normalize(mean=(0.5,), std=(0.5,)),  # 흑백 이미지 평균과 표준편차
+            ToTensor()
+        ]
+    )
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', default='data/',type=str, help='the path of dataset')
@@ -64,7 +77,8 @@ if __name__ == '__main__':
     df = df[df.category=='test']
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     test_files = list(df.image_id)
-    test_dataset = binary_class(args.dataset,test_files, get_transform())
+    # test_dataset = binary_class(args.dataset,test_files, get_transform())
+    test_dataset = multi_classes(args.dataset,test_files, get_transform())
     model = torch.load(args.model)
 
     model = model.cuda()
@@ -86,7 +100,8 @@ if __name__ == '__main__':
     since = time.time()
     
     for image_id in test_files:
-        img = cv2.imread(f'data/images/{image_id}')
+        # img = cv2.imread(f'data/images/{image_id}')
+        img = cv2.imread(f'/userHome/userhome4/kyoungmin/dataset/data/images/{image_id}')
         img = cv2.resize(img, ((256,256)))
         img_id = list(image_id.split('.'))[0]
         cv2.imwrite(f'debug/{img_id}.png',img)
@@ -96,17 +111,22 @@ if __name__ == '__main__':
             print(img.shape)
             img = Variable(torch.unsqueeze(img, dim=0).float(), requires_grad=False).cuda()           
             mask = Variable(torch.unsqueeze(mask, dim=0).float(), requires_grad=False).cuda()
+            mask_class = torch.argmax(mask, dim=1)
             torch.cuda.synchronize()
             start = time.time()
             pred = model(img)
+            pred = torch.softmax(pred, dim=1)  # 클래스 확률 계산
+            pred_class = torch.argmax(pred, dim=1)  # 픽셀별 클래스 예측
+            # print(pred.shape)
+            # pred = pred[:, 0, :, :]  # Output shape: (1, 256, 256)
             torch.cuda.synchronize()
             end = time.time()
             time_cost.append(end-start)
 
-            pred = torch.sigmoid(pred)
+            # pred = torch.sigmoid(pred)
 
-            pred[pred >= 0.5] = 1
-            pred[pred < 0.5] = 0
+            # pred[pred >= 0.5] = 1
+            # pred[pred < 0.5] = 0
             
 
             pred_draw = pred.clone().detach()
@@ -122,8 +142,11 @@ if __name__ == '__main__':
                 mask_numpy = mask_draw.cpu().detach().numpy()[0][0]
                 mask_numpy[mask_numpy==1] = 255
                 cv2.imwrite(f'debug/{img_id}_gt.png',mask_numpy)
-            iouscore = iou_eval(pred,mask)
-            dicescore = dice_eval(pred,mask)
+            # iouscore = iou_eval(pred,mask)
+            # dicescore = dice_eval(pred,mask)
+
+            iouscore = IoU_multiple()(pred_class, mask_class)
+            dicescore = DiceLoss_multiple()(pred, mask)
             pred = pred.view(-1)
             mask = mask.view(-1)
      

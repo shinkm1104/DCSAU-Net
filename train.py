@@ -17,25 +17,47 @@ from data_loading import multi_classes,binary_class
 from sklearn.model_selection import GroupKFold
 from pytorch_dcsaunet import DCSAU_Net
 from loss import *
-from self_attention_cv import transunet
+from datetime import datetime
 
+
+# from self_attention_cv import transunet
+
+
+# def get_train_transform():
+#    return A.Compose(
+#        [
+#         A.Resize(256, 256),
+#         A.HorizontalFlip(p=0.25),
+#         A.ShiftScaleRotate(shift_limit=0,p=0.25),
+#         A.CoarseDropout(),
+#         A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+#         ToTensor()
+#         ])
 
 def get_train_transform():
    return A.Compose(
        [
-        A.Resize(256, 256),
-        A.HorizontalFlip(p=0.25),
-        A.ShiftScaleRotate(shift_limit=0,p=0.25),
-        A.CoarseDropout(),
-        A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-        ToTensor()
-        ])
+           A.Resize(256, 256),
+           A.HorizontalFlip(p=0.25),
+           A.ShiftScaleRotate(shift_limit=0, p=0.25),
+           A.CoarseDropout(),
+           A.Normalize(mean=(0.5,), std=(0.5,)),  # Grayscale mean/std로 수정
+           ToTensor()
+       ])
+
+# def get_valid_transform():
+#    return A.Compose(
+#        [
+#         A.Resize(256, 256),
+#         A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+#         ToTensor()
+#         ])
 
 def get_valid_transform():
    return A.Compose(
        [
         A.Resize(256, 256),
-        A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+        A.Normalize(mean=(0.5,), std=(0.5,)),  # Grayscale mean/std로 수정
         ToTensor()
         ])
 
@@ -68,7 +90,6 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=5):
             for inputs,labels,image_id in dataloaders[phase]:      
                 # wrap them in Variable
                 if torch.cuda.is_available():
-                    
                     inputs = Variable(inputs.cuda())
                     labels = Variable(labels.cuda())
                     #label_for_ce = Variable(label_for_ce.cuda())
@@ -80,7 +101,8 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=5):
                 #label_for_ce = label_for_ce.long()
                 # forward
                 outputs = model(inputs)
-
+                # print(inputs.shape)
+                # outputs = outputs.unsqueeze(-1).expand(-1, -1, -1, -1, 4) # 클래스 차원 추가
                 loss = criterion(outputs, labels)
                 score = accuracy_metric(outputs,labels)
 
@@ -90,12 +112,15 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=5):
                     
                 # calculate loss and IoU
                 running_loss.append(loss.item())
+                # print(f'loss : {loss.item()}')
                 running_corrects.append(score.item())
+                # print(f'score : {score.item()}')
              
 
             epoch_loss = np.mean(running_loss)
             epoch_acc = np.mean(running_corrects)
-            
+            current_time = datetime.now().strftime('%m%d_%H%M%S')
+            print(f'time : {current_time}')
             print('{} Loss: {:.4f} IoU: {:.4f}'.format(
                 phase, epoch_loss, epoch_acc))
             
@@ -148,29 +173,46 @@ if __name__ == '__main__':
     val_files = list(df[df.fold==fold].image_id)
     train_files = list(df[df.fold!=fold].image_id)
     
-    train_dataset = binary_class(args.dataset,train_files, get_train_transform())
-    val_dataset = binary_class(args.dataset,val_files, get_valid_transform())
+    # train_dataset = binary_class(args.dataset,train_files, get_train_transform())
+    # val_dataset = binary_class(args.dataset,val_files, get_valid_transform())
+    train_dataset = multi_classes(args.dataset,train_files, get_train_transform())
+    val_dataset = multi_classes(args.dataset,val_files, get_valid_transform())
     
     train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=args.batch, shuffle=True,drop_last=True)
     val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=args.batch//2,drop_last=True)
     
     dataloaders = {'train':train_loader,'valid':val_loader}
 
-    model_ft = DCSAU_Net.Model(img_channels = 3, n_classes = 1)
-        
+    # model_ft = DCSAU_Net.Model(img_channels = 3, n_classes = 1)
+    model_ft = DCSAU_Net.DCSA_UNet(in_channels = 1, n_classes = 4)
+    
+    # device = torch.device('cuda:2' if torch.cuda.is_available() else 'cpu')
     if torch.cuda.is_available():
-        model_ft = model_ft.cuda()
+        # print('cuda')
+        os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
+        os.environ["CUDA_VISIBLE_DEVICES"]= "1"
+        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
+        device = torch.device("cuda")
+        model_ft = model_ft.to(device)
+
+        # _model_ft = model_ft.cuda()
+        # model_ft = nn.DataParallel(_model_ft).to(device)
+        # model_ft = model_ft.cuda()
+        # print(f"Using device: {device}")
+        # 모델을 명시적으로 지정한 장치로 이동
+
         
     # Loss, IoU and Optimizer
     if args.loss == 'ce':
         #criterion = nn.CrossEntropyLoss()
         criterion = nn.BCELoss()
     if args.loss == 'dice':
-        criterion = DiceLoss_binary()
-        #criterion = DiceLoss_multiple()
+        # criterion = DiceLoss_binary()
+        criterion = DiceLoss_multiple()
     
-    accuracy_metric = IoU_binary()
-    #accuracy_metric = IoU_multiple()
+    # accuracy_metric = IoU_binary()
+    accuracy_metric = IoU_multiple()
     optimizer_ft = optim.Adam(model_ft.parameters(),lr = args.lr)
     exp_lr_scheduler = lr_scheduler.StepLR(optimizer_ft, step_size=100, gamma=0.5)
     #exp_lr_scheduler = lr_scheduler.ReduceLROnPlateau(optimizer_ft, patience=5, factor=0.1,min_lr=1e-6)
